@@ -20,6 +20,9 @@ module RuboCop
         '>' => '&gt;',
         '&' => '&amp;'
       }.freeze
+      ESCAPE_PATTERN = Regexp.union(ESCAPE_MAP.keys).freeze
+
+      NO_OFFENSES = [].freeze
 
       def initialize(output, options = {})
         super
@@ -37,8 +40,10 @@ module RuboCop
         # https://github.com/mikian/rubocop-junit-formatter/blob/v0.1.4/lib/rubocop/formatter/junit_formatter.rb#L9
         #
         # In the future, it would be preferable to return only enabled cops.
-        Cop::Registry.all.each do |cop|
-          target_offenses = offenses_for_cop(offenses, cop)
+        offenses_by_cop_name = offenses.group_by(&:cop_name)
+
+        target_cops.each do |cop|
+          target_offenses = offenses_by_cop_name.fetch(cop.cop_name, NO_OFFENSES)
           @offense_count += target_offenses.count
 
           next unless relevant_for_output?(options, target_offenses)
@@ -55,9 +60,9 @@ module RuboCop
 
         @test_case_elements.each do |test_case_element|
           if test_case_element.failures.empty?
-            output.puts %(    <testcase classname='#{xml_escape test_case_element.classname}' name='#{test_case_element.name}'/>)
+            output.puts %(    <testcase classname='#{test_case_element.classname}' name='#{test_case_element.name}'/>)
           else
-            output.puts %(    <testcase classname='#{xml_escape test_case_element.classname}' name='#{test_case_element.name}'>)
+            output.puts %(    <testcase classname='#{test_case_element.classname}' name='#{test_case_element.name}'>)
             test_case_element.failures.each do |failure_element|
               output.puts %(      <failure type='#{failure_element.type}' message='#{xml_escape failure_element.message}'>)
               output.puts %(        #{xml_escape failure_element.text})
@@ -78,8 +83,11 @@ module RuboCop
         !options[:display_only_failed] || target_offenses.any?
       end
 
-      def offenses_for_cop(all_offenses, cop)
-        all_offenses.select { |offense| offense.cop_name == cop.cop_name }
+      # The registered cops do not change during a run, but `Registry.all` builds
+      # a filtered copy of the global registry on every call, so it is resolved
+      # once per run rather than once per file.
+      def target_cops
+        @target_cops ||= Cop::Registry.all
       end
 
       def add_testcase_element_to_testsuite_element(file, target_offenses, cop)
@@ -91,9 +99,11 @@ module RuboCop
         end
       end
 
+      # Escaped here rather than at output time, because there is one distinct
+      # classname per file but one test case element per file and cop.
       def classname_attribute_value(file)
         @classname_attribute_value_cache ||= Hash.new do |hash, key|
-          hash[key] = key.delete_suffix('.rb').gsub("#{PathUtil.pwd}/", '').tr('/', '.')
+          hash[key] = xml_escape(key.delete_suffix('.rb').gsub("#{PathUtil.pwd}/", '').tr('/', '.'))
         end
         @classname_attribute_value_cache[file]
       end
@@ -116,7 +126,7 @@ module RuboCop
       end
 
       def xml_escape(string)
-        string.gsub(Regexp.union(ESCAPE_MAP.keys), ESCAPE_MAP)
+        string.gsub(ESCAPE_PATTERN, ESCAPE_MAP)
       end
 
       class TestCaseElement # :nodoc:
